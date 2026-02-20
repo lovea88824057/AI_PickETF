@@ -1,4 +1,4 @@
-# app.py - 优化版：2位小数 + 历史决策记录
+# app.py - 多策略版：扩展框架支持多种投资风格
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import akshare as ak
@@ -10,20 +10,73 @@ import json
 app = Flask(__name__)
 CORS(app)
 
+# ============ 策略定义 ============
+STRATEGIES = {
+    'momentum': {
+        'name': '追涨杀跌',
+        'english': 'Momentum Trading',
+        'description': '追踪市场热点，快速响应场景变化',
+        'profession': '代码哥 (CodeGhost)',
+        'detail': '专注于互联网与科技创新，研究代码逻辑与增长引擎，掌握快速迭代节奏与市场反应。',
+        'style': '激进型',
+        'color': '#667eea',
+        'icon': '⚡'
+    },
+    'value': {
+        'name': '稳健派跌',
+        'english': 'Conservative Dividend Strategy',
+        'description': '坚守20日均线，专注高股息白马股，宏观避险第一',
+        'profession': '白马猎手',
+        'detail': '专注银行、电力等高分红白马股，以20日均线为防线，破线即卖，规避宏观政策风险，追求稳定收益。',
+        'style': '稳健型',
+        'color': '#11998e',
+        'icon': '🏛️'
+    },
+    'balanced': {
+        'name': '稳健均衡',
+        'english': 'Balanced Strategy',
+        'description': '风险与收益平衡配置，追求稳定增长',
+        'profession': '资产配置师',
+        'detail': '灵活配置各类资产，控制波动率，追求风险调整后的持续收益。',
+        'style': '稳健型',
+        'color': '#f59e0b',
+        'icon': '⚖️'
+    },
+    'growth': {
+        'name': '信仰成长',
+        'english': 'Growth Investing',
+        'description': '投资高增长企业，布局未来赛道',
+        'profession': '赛道探险家',
+        'detail': '甄别优质成长赛道，布局产业升级方向，追求长期产业浪潮。',
+        'style': '成长型',
+        'color': '#ec4899',
+        'icon': '🚀'
+    }
+}
+
 # ============ 数据模块 ============
 class ETFData:
     def __init__(self):
         self.etf_list = {
-            '510300': '沪深300ETF',
-            '510500': '中证500ETF', 
-            '159915': '创业板ETF',
-            '588000': '科创50ETF',
-            '512880': '证券ETF',
-            '515030': '新能源车ETF',
-            '512480': '半导体ETF',
-            '512690': '酒ETF',
-            '512170': '医疗ETF',
-            '518880': '黄金ETF'
+            # 宽基ETF（最核心）
+            '510300': '沪深300ETF',      # 沪深300 - 大盘必需
+            '510500': '中证500ETF',      # 中证500 - 中盘必需
+            # 行业主题ETF（代表性）
+            '159915': '创业板ETF',       # 创业板 - 成长代表
+            '588000': '科创50ETF',       # 科创50 - 科技代表
+            # 高股息白马ETF（稳健派重点）
+            '512880': '证券ETF',         # 金融安全
+            '512800': '银行ETF',         # 银行安全
+            '512630': '电力ETF',         # 电力安全
+            '512200': '消费50ETF',       # 消费龙头
+            # 其他行业ETF（多元化）
+            '515030': '新能源车ETF',     # 成长新兴
+            '512480': '半导体ETF',       # 科技细分
+            '512690': '酒ETF',           # 消费细分
+            '512170': '医疗ETF',         # 防御细分
+            '512810': '食品ETF',         # 消费防御
+            # 防御类ETF（保护性）
+            '518880': '黄金ETF'          # 避险资产
         }
         self.cash_code = 'CASH'
         self.cash_name = '💰 空仓观望'
@@ -38,12 +91,33 @@ class ETFData:
                 end_date=end_date.strftime("%Y%m%d"),
                 adjust="qfq"
             )
+            
+            # 检查返回的数据是否为空
+            if df is None or len(df) == 0:
+                print(f"获取{symbol}失败: 返回空数据")
+                return None
+            
+            # 检查必需列是否存在
+            required_cols = ['日期', '收盘', '开盘']
+            for col in required_cols:
+                if col not in df.columns:
+                    print(f"获取{symbol}失败: 缺少列'{col}'，返回列为{list(df.columns)}")
+                    return None
+            
             df['日期'] = pd.to_datetime(df['日期'])
             df = df.sort_values('日期').reset_index(drop=True)
             df = df[df['收盘'] > 0].dropna(subset=['收盘', '开盘'])
+            
+            if len(df) < 30:
+                print(f"获取{symbol}成功但数据过少: {len(df)}条")
+                return None
+                
             return df
+        except KeyError as e:
+            print(f"获取{symbol}失败: 字段错误 {e}")
+            return None
         except Exception as e:
-            print(f"获取{symbol}失败: {e}")
+            print(f"获取{symbol}失败: {type(e).__name__} - {e}")
             return None
     
     def calculate_features(self, df):
@@ -61,19 +135,62 @@ class ETFData:
         
         return df
 
-# ============ AI模型 ============
+# ============ AI模型（支持多策略框架） ============
 class SmartModel:
-    def __init__(self):
-        self.weights = {
-            'return_5': 0.25,
-            'return_10': 0.20,
-            'return_20': 0.25,
-            'ma20_bias': 0.20,
-            'volatility': -0.10
-        }
-        self.cash_threshold = 45
-        self.market_bear_threshold = -0.05
-        self.max_volatility = 0.03
+    def __init__(self, strategy_type='momentum'):
+        self.strategy_type = strategy_type
+        
+        # 追涨杀跌策略（Momentum Trading）
+        if strategy_type == 'momentum':
+            self.weights = {
+                'return_5': 0.25,
+                'return_10': 0.20,
+                'return_20': 0.25,
+                'ma20_bias': 0.20,
+                'volatility': -0.10
+            }
+            self.cash_threshold = 45
+            self.market_bear_threshold = -0.05
+            self.max_volatility = 0.03
+        
+        # 稳健派跌策略（Conservative Dividend Strategy）- 坚守20日均线
+        elif strategy_type == 'value':
+            self.weights = {
+                'return_5': 0.05,        # 极低：不追逐短期波动
+                'return_10': 0.10,       # 低：中期缓慢上升
+                'return_20': 0.15,       # 低：关注长期趋势
+                'ma20_bias': 0.60,       # 极高权重：20日均线是核心防线
+                'volatility': -0.10      # 轻度惩罚波动率
+            }
+            self.cash_threshold = 55   # 更严格的空仓线（保守避险）
+            self.market_bear_threshold = -0.06  # 宏观政策风险敏感（-6%触发）
+            self.max_volatility = 0.020  # 严控波动率（相对严格）
+        
+        # 稳健均衡策略（Balanced）- 预留框架，待实现
+        elif strategy_type == 'balanced':
+            self.weights = {
+                'return_5': 0.15,
+                'return_10': 0.20,
+                'return_20': 0.20,
+                'ma20_bias': 0.25,
+                'volatility': -0.10
+            }
+            self.cash_threshold = 48
+            self.market_bear_threshold = -0.06
+            self.max_volatility = 0.028
+        
+        # 成长信仰策略（Growth）- 预留框架，待实现
+        elif strategy_type == 'growth':
+            self.weights = {
+                'return_5': 0.30,
+                'return_10': 0.25,
+                'return_20': 0.20,
+                'ma20_bias': 0.15,
+                'volatility': -0.05
+            }
+            self.cash_threshold = 40
+            self.market_bear_threshold = -0.03
+            self.max_volatility = 0.035
         
     def predict(self, df, market_df=None):
         """预测ETF得分，返回2位小数"""
@@ -84,15 +201,35 @@ class SmartModel:
         score = 50.0
         signals = {}
         
-        for feature, weight in self.weights.items():
-            if feature in latest and pd.notna(latest[feature]):
-                if feature == 'volatility':
-                    vol_score = max(0, 1 - latest[feature] / self.max_volatility) * 50
-                    score += (vol_score - 25) * abs(weight)
-                    signals['volatility'] = round(latest[feature] * 100, 2)
-                else:
-                    score += latest[feature] * weight * 100
-                    signals[feature] = round(latest[feature] * 100, 2)
+        # 对于稳健派跌策略：破20日均线卖出硬性规则
+        if self.strategy_type == 'value' and 'ma20_bias' in latest:
+            ma20_bias = latest.get('ma20_bias', 0)
+            signals['ma20_below_line'] = ma20_bias < 0  # 是否跌破20日均线
+            
+            # 如果跌破20日均线，直接降低评分到警戒线
+            if ma20_bias < 0:
+                # 记录跌破程度
+                signals['break_distance'] = round(ma20_bias * 100, 2)
+                # 根据跌破程度进行惩罚：跌破幅度越大，惩罚越重
+                break_depth = abs(ma20_bias)
+                if break_depth > 0.05:  # 跌破超过5%
+                    score = 30.0  # 降到卖出信号
+                elif break_depth > 0.02:  # 跌破超过2%
+                    score = 40.0  # 降到警戒线
+                else:  # 刚刚跌破
+                    score = 45.0  # 降到中位
+        
+        # 正常的加权评分
+        if score == 50.0:  # 只有在没有触发止损时才进行正常评分
+            for feature, weight in self.weights.items():
+                if feature in latest and pd.notna(latest[feature]):
+                    if feature == 'volatility':
+                        vol_score = max(0, 1 - latest[feature] / self.max_volatility) * 50
+                        score += (vol_score - 25) * abs(weight)
+                        signals['volatility'] = round(latest[feature] * 100, 2)
+                    else:
+                        score += latest[feature] * weight * 100
+                        signals[feature] = round(latest[feature] * 100, 2)
         
         # 确保2位小数
         score = round(min(max(score, 0), 100), 2)
@@ -405,13 +542,35 @@ class BacktestEngine:
 
 # ============ 策略实例 ============
 class Strategy:
-    def __init__(self):
+    def __init__(self, strategy_type='momentum'):
+        self.strategy_type = strategy_type
         self.data = ETFData()
-        self.model = SmartModel()
+        self.model = SmartModel(strategy_type=strategy_type)
         self.backtest = BacktestEngine(self)
     
     def get_recommendation(self):
         """获取今日推荐"""
+        # 检查策略是否已完整实现
+        unimplemented_strategies = {
+            'balanced': '🔧 稳健均衡策略 - 开发中',
+            'growth': '🚀 信仰成长策略 - 开发中'
+        }
+        
+        if self.strategy_type in unimplemented_strategies:
+            return {
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'status': 'unimplemented',
+                'message': unimplemented_strategies[self.strategy_type],
+                'recommendation': 'N/A',
+                'recommend_name': unimplemented_strategies[self.strategy_type],
+                'confidence': 0.0,
+                'cash_reason': '该策略正在开发中，敬请期待',
+                'should_cash': 1,
+                'all_scores': [],
+                'details': {},
+                'market_status': '待完成'
+            }
+        
         end_date = datetime.now()
         start_date = end_date - timedelta(days=60)
         
@@ -467,13 +626,13 @@ class Strategy:
             }
         
         # 排名列表（全部2位小数）
-        ranking = [{'code': 'CASH', 'name': self.data.cash_name, 'score': 0.0, 'is_cash': True}]
+        ranking = [{'code': 'CASH', 'name': self.data.cash_name, 'score': 0.0, 'is_cash': 1}]
         for code, score in sorted(all_scores.items(), key=lambda x: x[1], reverse=True):
             ranking.append({
                 'code': code,
                 'name': all_details[code]['name'],
                 'score': score,
-                'is_cash': False
+                'is_cash': 0
             })
         
         return {
@@ -482,35 +641,164 @@ class Strategy:
             'recommend_name': recommendation['name'],
             'confidence': recommendation.get('score', 0.0),
             'cash_reason': cash_reason if should_cash else None,
-            'should_cash': should_cash,
+            'should_cash': 1 if should_cash else 0,
             'all_scores': ranking,
             'details': all_details,
             'market_status': '熊市' if should_cash else '正常'
         }
 
-strategy = Strategy()
+# 默认创建"追涨杀跌"策略实例
+strategy = Strategy(strategy_type='momentum')
 
-# ============ 网页界面（新增决策记录页面） ============
+# ============ 网页界面（多策略卡片版） ============
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ETF AI选股器 - 决策记录版</title>
+    <title>ETF AI投资助手 - 多策略平台</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background-attachment: fixed;
             padding: 20px;
+            min-height: 100vh;
         }
-        .container { max-width: 900px; margin: 0 auto; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1200px; margin: 0 auto; }
         
-        .header { text-align: center; margin-bottom: 30px; }
-        .header h1 { color: #333; font-size: 28px; margin-bottom: 10px; }
-        .header p { color: #666; font-size: 14px; }
+        .header { text-align: center; margin-bottom: 40px; }
+        .header h1 { 
+            color: white; 
+            font-size: 36px; 
+            margin-bottom: 10px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .header p { 
+            color: rgba(255,255,255,0.8); 
+            font-size: 16px; 
+            text-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+        
+        /* ========== 策略选择页面 ========== */
+        .strategy-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 24px;
+            margin-bottom: 40px;
+        }
+        
+        .strategy-card {
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+            border: 3px solid transparent;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .strategy-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--color);
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.3s ease;
+        }
+        
+        .strategy-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 16px 32px rgba(0,0,0,0.2);
+            border-color: var(--color);
+        }
+        
+        .strategy-card:hover::before {
+            transform: scaleX(1);
+        }
+        
+        .strategy-card.active {
+            border-color: var(--color);
+            background: linear-gradient(135deg, rgba(102,126,234,0.05) 0%, rgba(118,75,162,0.05) 100%);
+            box-shadow: 0 16px 32px rgba(102,126,234,0.3);
+        }
+        
+        .strategy-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+        
+        .strategy-title {
+            font-size: 20px;
+            font-weight: bold;
+            color: var(--color);
+            margin-bottom: 4px;
+        }
+        
+        .strategy-subtitle {
+            font-size: 12px;
+            color: #999;
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+        
+        .strategy-desc {
+            font-size: 14px;
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 16px;
+            min-height: 40px;
+        }
+        
+        .strategy-profession {
+            background: var(--color);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 12px;
+            display: inline-block;
+        }
+        
+        .strategy-detail {
+            font-size: 12px;
+            color: #888;
+            line-height: 1.5;
+            border-top: 1px solid #f0f0f0;
+            padding-top: 12px;
+        }
+        
+        .strategy-badge {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: var(--color);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        
+        /* ========== 内容页面 ========== */
+        .content-page {
+            display: none;
+        }
+        
+        .content-page.active {
+            display: block;
+        }
         
         .nav-tabs {
             display: flex;
@@ -520,6 +808,7 @@ HTML_TEMPLATE = """
             margin-bottom: 20px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
+        
         .nav-tab {
             flex: 1;
             padding: 12px;
@@ -532,8 +821,9 @@ HTML_TEMPLATE = """
             transition: all 0.3s;
             text-align: center;
         }
+        
         .nav-tab.active {
-            background: #667eea;
+            background: var(--color);
             color: white;
             font-weight: bold;
         }
@@ -560,11 +850,8 @@ HTML_TEMPLATE = """
         }
         
         .recommend-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--color) 0%, rgba(0,0,0,0.1));
             color: white;
-        }
-        .recommend-card.cash {
-            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
         }
         
         .tag {
@@ -575,17 +862,9 @@ HTML_TEMPLATE = """
             font-size: 12px;
             margin-bottom: 16px;
         }
-        .tag.alert { background: rgba(255,0,0,0.3); font-weight: bold; }
         
         .etf-code { font-size: 48px; font-weight: bold; margin: 10px 0; }
         .etf-name { font-size: 20px; opacity: 0.9; margin-bottom: 20px; }
-        .cash-reason { 
-            background: rgba(255,255,255,0.15);
-            padding: 12px;
-            border-radius: 8px;
-            font-size: 14px;
-            margin-top: 10px;
-        }
         
         .metrics { display: flex; gap: 20px; margin-top: 20px; }
         .metric { text-align: center; flex: 1; }
@@ -620,7 +899,7 @@ HTML_TEMPLATE = """
         }
         .period-tab.active {
             background: white;
-            color: #667eea;
+            color: var(--color);
             font-weight: bold;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
@@ -643,16 +922,15 @@ HTML_TEMPLATE = """
             border-radius: 12px;
             text-align: center;
         }
-        .stat-item.highlight { background: #e3f2fd; border: 2px solid #2196f3; }
+        .stat-item.highlight { background: #e3f2fd; border: 2px solid var(--color); }
         .stat-value {
             font-size: 24px;
             font-weight: bold;
             color: #333;
             display: block;
         }
-        .stat-value.positive { color: #f56c6c; }
+        .stat-value.positive { color: var(--color); }
         .stat-value.negative { color: #67c23a; }
-        .stat-value.cash { color: #11998e; }
         .stat-label { font-size: 12px; color: #999; margin-top: 4px; }
         
         /* 决策记录样式 */
@@ -661,14 +939,12 @@ HTML_TEMPLATE = """
             overflow-y: auto;
         }
         .decision-item {
-            border-left: 4px solid #667eea;
+            border-left: 4px solid var(--color);
             background: #f8f9fa;
             padding: 16px;
             margin-bottom: 12px;
             border-radius: 0 12px 12px 0;
         }
-        .decision-item.cash { border-left-color: #11998e; }
-        .decision-item.switch { border-left-color: #ff9800; }
         
         .decision-header {
             display: flex;
@@ -682,12 +958,9 @@ HTML_TEMPLATE = """
             border-radius: 12px;
             font-size: 12px;
             font-weight: bold;
+            background: var(--color);
+            color: white;
         }
-        .action-buy { background: #f56c6c; color: white; }
-        .action-sell { background: #909399; color: white; }
-        .action-switch { background: #ff9800; color: white; }
-        .action-hold { background: #67c23a; color: white; }
-        .action-cash { background: #11998e; color: white; }
         
         .decision-body {
             display: flex;
@@ -696,33 +969,12 @@ HTML_TEMPLATE = """
             flex-wrap: wrap;
             gap: 10px;
         }
-        .decision-main {
-            flex: 1;
-        }
-        .decision-from-to {
-            font-size: 16px;
-            color: #333;
-            margin-bottom: 4px;
-        }
-        .decision-arrow {
-            color: #667eea;
-            font-weight: bold;
-            margin: 0 8px;
-        }
-        .decision-reason {
-            font-size: 13px;
-            color: #666;
-        }
-        .decision-scores {
-            text-align: right;
-            font-size: 12px;
-            color: #999;
-        }
-        .score-detail {
-            display: inline-block;
-            margin-left: 8px;
-        }
+        .decision-main { flex: 1; }
+        .decision-from-to { font-size: 16px; color: #333; margin-bottom: 4px; }
+        .decision-arrow { color: var(--color); font-weight: bold; margin: 0 8px; }
+        .decision-reason { font-size: 13px; color: #666; }
         
+        /* 排名列表 */
         .ranking-title { 
             font-size: 18px; 
             font-weight: bold; 
@@ -735,13 +987,6 @@ HTML_TEMPLATE = """
             padding: 14px 0;
             border-bottom: 1px solid #eee;
         }
-        .rank-item:last-child { border-bottom: none; }
-        .rank-item.cash {
-            background: #f0f9f4;
-            border-radius: 8px;
-            margin: 4px 0;
-            padding: 14px;
-        }
         .rank-num {
             width: 32px;
             height: 32px;
@@ -753,108 +998,221 @@ HTML_TEMPLATE = """
             color: #666;
             font-size: 14px;
         }
-        .rank-num.cash { background: #11998e !important; color: white !important; }
         .rank-1 { background: #ffd700 !important; color: #333 !important; }
         .rank-2 { background: #c0c0c0 !important; color: #333 !important; }
         .rank-3 { background: #cd7f32 !important; color: white !important; }
         .rank-info { flex: 1; margin-left: 12px; }
         .rank-name { font-size: 16px; font-weight: 500; color: #333; display: block; }
-        .rank-name.cash { color: #11998e; font-weight: bold; }
         .rank-code { font-size: 12px; color: #999; margin-top: 2px; }
-        .rank-score { font-size: 20px; font-weight: bold; color: #667eea; font-family: 'Courier New', monospace; }
-        .rank-score.cash { color: #11998e; }
+        .rank-score { font-size: 20px; font-weight: bold; color: var(--color); font-family: 'Courier New', monospace; }
         
-        .legend {
-            display: flex;
-            gap: 20px;
-            margin-top: 10px;
-            font-size: 12px;
-            color: #666;
+        .back-button {
+            display: inline-block;
+            padding: 10px 20px;
+            background: white;
+            color: var(--color);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-bottom: 20px;
+            transition: all 0.3s;
         }
-        .legend-item { display: flex; align-items: center; gap: 6px; }
-        .legend-dot { width: 12px; height: 12px; border-radius: 50%; }
-        .legend-dot.cash { background: #11998e; }
-        .legend-dot.etf { background: #667eea; }
+        
+        .back-button:hover {
+            background: var(--color);
+            color: white;
+        }
         
         .loading { text-align: center; padding: 60px; color: #999; }
+        
+        @media (max-width: 768px) {
+            .strategy-grid {
+                grid-template-columns: 1fr;
+            }
+            .header h1 {
+                font-size: 24px;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 ETF AI选股器</h1>
-            <p>智能空仓版 | 历史决策可追溯</p>
+            <h1>🤖 ETF AI投资助手</h1>
+            <p>智能多策略平台 | 选择适合你的投资风格</p>
         </div>
         
-        <!-- 导航标签 -->
-        <div class="nav-tabs">
-            <button class="nav-tab active" onclick="switchPage('dashboard')">📊 实时推荐</button>
-            <button class="nav-tab" onclick="switchPage('backtest')">📈 回测收益</button>
-            <button class="nav-tab" onclick="switchPage('decisions')">📋 决策记录</button>
-        </div>
-        
-        <!-- 页面1: 实时推荐 -->
-        <div id="page-dashboard" class="page active">
+        <!-- 策略选择页面 -->
+        <div id="strategy-selection-page">
             <div class="warning">
-                <strong>💡 策略特点：</strong>AI评分精确到2位小数，当所有ETF评分低于45.00分或市场大跌时自动空仓。
+                💡 <strong>平台说明：</strong>该平台支持多种投资风格。选择一个策略卡片，查看实时推荐、回测表现和决策记录。
             </div>
-            <div id="recommend-section"></div>
             
-            <div class="card">
-                <div class="ranking-title">📊 今日ETF评分排行（满分100.00）</div>
-                <div id="ranking-list"></div>
-            </div>
+            <div class="strategy-grid" id="strategy-grid"></div>
         </div>
         
-        <!-- 页面2: 回测收益 -->
-        <div id="page-backtest" class="page">
-            <div class="card">
-                <div class="chart-header">
-                    <span class="chart-title">策略回测收益走势</span>
-                    <div class="period-tabs">
-                        <button class="period-tab" onclick="switchPeriod('week')">近1周</button>
-                        <button class="period-tab active" onclick="switchPeriod('month')">近1月</button>
-                        <button class="period-tab" onclick="switchPeriod('half')">近半年</button>
-                        <button class="period-tab" onclick="switchPeriod('year')">近1年</button>
-                    </div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="returnChart"></canvas>
-                </div>
-                <div class="legend">
-                    <div class="legend-item">
-                        <div class="legend-dot cash"></div>
-                        <span>绿色点 = 空仓期</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-dot etf"></div>
-                        <span>蓝色线 = 持仓期</span>
-                    </div>
-                </div>
-                <div class="stats-grid" id="stats-grid"></div>
+        <!-- 内容页面（选择策略后显示） -->
+        <div id="content-page" class="content-page">
+            <button class="back-button" onclick="backToSelection()">← 返回策略选择</button>
+            
+            <div class="nav-tabs">
+                <button class="nav-tab active" onclick="switchPage('dashboard')">📊 实时推荐</button>
+                <button class="nav-tab" onclick="switchPage('backtest')">📈 回测收益</button>
+                <button class="nav-tab" onclick="switchPage('decisions')">📋 决策记录</button>
             </div>
-        </div>
-        
-        <!-- 页面3: 决策记录 -->
-        <div id="page-decisions" class="page">
-            <div class="card">
-                <div class="chart-header">
-                    <span class="chart-title">📋 历史决策记录（最近50条）</span>
-                    <span style="font-size: 12px; color: #999;">显示评分细节和决策理由</span>
+            
+            <!-- 页面1: 实时推荐 -->
+            <div id="page-dashboard" class="page active">
+                <div id="recommend-section"></div>
+                
+                <div class="card">
+                    <div class="ranking-title">📊 今日ETF评分排行（满分100.00）</div>
+                    <div id="ranking-list"></div>
                 </div>
-                <div class="decision-list" id="decision-list">
-                    <div class="loading">加载中...</div>
+            </div>
+            
+            <!-- 页面2: 回测收益 -->
+            <div id="page-backtest" class="page">
+                <div class="card">
+                    <div class="chart-header">
+                        <span class="chart-title">策略回测收益走势</span>
+                        <div class="period-tabs">
+                            <button class="period-tab" onclick="switchPeriod('week')">近1周</button>
+                            <button class="period-tab active" onclick="switchPeriod('month')">近1月</button>
+                            <button class="period-tab" onclick="switchPeriod('half')">近半年</button>
+                            <button class="period-tab" onclick="switchPeriod('year')">近1年</button>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="returnChart"></canvas>
+                    </div>
+                    <div class="stats-grid" id="stats-grid"></div>
+                </div>
+            </div>
+            
+            <!-- 页面3: 决策记录 -->
+            <div id="page-decisions" class="page">
+                <div class="card">
+                    <div class="chart-header">
+                        <span class="chart-title">📋 历史决策记录（最近50条）</span>
+                    </div>
+                    <div class="decision-list" id="decision-list">
+                        <div class="loading">加载中...</div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
     
     <script>
+        // 策略配置（与后端STRATEGIES一致）
+        const strategies = {
+            'momentum': {
+                'name': '追涨杀跌',
+                'english': 'Momentum Trading',
+                'description': '追踪市场热点，快速响应场景变化',
+                'profession': '代码哥 (CodeGhost)',
+                'detail': '专注于互联网与科技创新，研究代码逻辑与增长引擎，掌握快速迭代节奏与市场反应。',
+                'style': '激进型',
+                'color': '#667eea',
+                'icon': '⚡'
+            },
+            'value': {
+                'name': '稳健派跌',
+                'english': 'Conservative Dividend Strategy',
+                'description': '坚守20日均线，专注高股息白马股，宏观避险第一',
+                'profession': '白马猎手',
+                'detail': '专注银行、电力等高分红白马股，以20日均线为防线，破线即卖，规避宏观政策风险，追求稳定收益。',
+                'style': '稳健型',
+                'color': '#11998e',
+                'icon': '🏛️'
+            },
+            'balanced': {
+                'name': '稳健均衡',
+                'english': 'Balanced Strategy',
+                'description': '风险与收益平衡配置，追求稳定增长',
+                'profession': '资产配置师',
+                'detail': '灵活配置各类资产，控制波动率，追求风险调整后的持续收益。',
+                'style': '稳健型',
+                'color': '#f59e0b',
+                'icon': '⚖️'
+            },
+            'growth': {
+                'name': '信仰成长',
+                'english': 'Growth Investing',
+                'description': '投资高增长企业，布局未来赛道',
+                'profession': '赛道探险家',
+                'detail': '甄别优质成长赛道，布局产业升级方向，追求长期产业浪潮。',
+                'style': '成长型',
+                'color': '#ec4899',
+                'icon': '🚀'
+            }
+        };
+        
+        let currentStrategy = 'momentum';  // 默认策略
         let currentPeriod = 'month';
         let returnChart = null;
         let backtestData = null;
         
-        // 切换页面
+        // 策略选择（接受元素引用和策略ID，避免依赖全局 event）
+        function selectStrategy(elem, strategyId) {
+            currentStrategy = strategyId;
+
+            // 更新UI样式
+            document.querySelectorAll('.strategy-card').forEach(card => {
+                card.classList.remove('active');
+            });
+            // 使用传入的元素定位并添加 active
+            elem.closest('.strategy-card').classList.add('active');
+
+            // 显示内容页面，隐藏选择页面
+            document.getElementById('strategy-selection-page').style.display = 'none';
+            document.getElementById('content-page').classList.add('active');
+
+            // 设置颜色变量
+            const color = strategies[strategyId].color;
+            document.documentElement.style.setProperty('--color', color);
+
+            // 加载推荐
+            loadRecommendation();
+        }
+        
+        // 返回策略选择页面
+        function backToSelection() {
+            document.getElementById('strategy-selection-page').style.display = 'block';
+            document.getElementById('content-page').classList.remove('active');
+            document.querySelectorAll('.strategy-card').forEach(card => {
+                card.classList.remove('active');
+            });
+        }
+        
+        // 初始化策略卡片
+        function initStrategies() {
+            const grid = document.getElementById('strategy-grid');
+            let html = '';
+            
+            for (const [key, strategy] of Object.entries(strategies)) {
+                html += `
+                    <div class="strategy-card" onclick="selectStrategy(this, '${key}')" style="--color: ${strategy.color}">
+                        <div class="strategy-icon">${strategy.icon}</div>
+                        <div class="strategy-title">${strategy.name}</div>
+                        <div class="strategy-subtitle">${strategy.english}</div>
+                        <div class="strategy-desc">${strategy.description}</div>
+                        <div class="strategy-profession">${strategy.profession}</div>
+                        <div class="strategy-detail">${strategy.detail}</div>
+                        <div class="strategy-badge" style="background: ${strategy.color};">${strategy.style}</div>
+                    </div>
+                `;
+            }
+            
+            grid.innerHTML = html;
+        }
+        
+        // 切换内容页面
         function switchPage(page) {
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -871,30 +1229,45 @@ HTML_TEMPLATE = """
         
         async function loadRecommendation() {
             try {
-                const res = await fetch('/api/recommend');
+                const res = await fetch(`/api/recommend?strategy=${currentStrategy}`);
                 const data = await res.json();
                 if (!data) return;
+                
+                // 检查策略是否已实现
+                if (data.status === 'unimplemented') {
+                    const html = `
+                        <div class="card recommend-card" style="text-align: center; padding: 60px 20px; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);">
+                            <div style="font-size: 48px; margin-bottom: 20px;">🔧</div>
+                            <div style="font-size: 24px; font-weight: bold; margin-bottom: 10px; color: #333;">
+                                ${data.recommend_name}
+                            </div>
+                            <div style="font-size: 16px; color: #666; margin-bottom: 30px;">
+                                该策略正在开发中，敬请期待！
+                            </div>
+                            <div style="font-size: 14px; color: #999; padding: 20px; background: rgba(255,255,255,0.8); border-radius: 8px;">
+                                我们正在精心打磨这个策略，争取为您提供更优质的投资建议。<br>
+                                请先使用其他已完成的策略吧！
+                            </div>
+                        </div>
+                    `;
+                    document.getElementById('recommend-section').innerHTML = html;
+                    document.getElementById('ranking-list').innerHTML = '';
+                    return;
+                }
                 
                 const rec = data.recommendation;
                 const isCash = data.should_cash;
                 
                 let html = `
-                    <div class="card recommend-card ${isCash ? 'cash' : ''}">
-                        <span class="tag ${isCash ? 'alert' : ''}">
+                    <div class="card recommend-card">
+                        <span class="tag">
                             ${isCash ? '⚠️ 建议空仓' : '🏆 今日推荐买入'}
                         </span>
                         <div class="etf-code">${rec}</div>
                         <div class="etf-name">${data.recommend_name}</div>
                 `;
                 
-                if (isCash) {
-                    html += `
-                        <div class="cash-reason">
-                            <strong>空仓原因：</strong>${data.cash_reason}<br>
-                            <small>空仓期间享受货币基金收益(约2%年化)</small>
-                        </div>
-                    `;
-                } else {
+                if (!isCash) {
                     const detail = data.details[rec];
                     html += `
                         <div class="metrics">
@@ -917,24 +1290,22 @@ HTML_TEMPLATE = """
                 html += '</div>';
                 document.getElementById('recommend-section').innerHTML = html;
                 
-                // 排名列表（2位小数）
+                // 排名列表
                 let rankHtml = '';
                 data.all_scores.forEach((item, idx) => {
                     const isCashItem = item.is_cash;
-                    const rankClass = isCashItem ? 'cash' : (idx <= 3 ? `rank-${idx}` : '');
-                    const scoreClass = isCashItem ? 'cash' : '';
-                    const nameClass = isCashItem ? 'cash' : '';
+                    const rankClass = isCashItem ? '' : (idx <= 3 ? `rank-${idx}` : '');
                     
                     rankHtml += `
-                        <div class="rank-item ${isCashItem ? 'cash' : ''}">
-                            <div class="rank-num ${rankClass} ${isCashItem ? 'cash' : ''}">
+                        <div class="rank-item">
+                            <div class="rank-num ${rankClass}">
                                 ${isCashItem ? '💰' : idx}
                             </div>
                             <div class="rank-info">
-                                <span class="rank-name ${nameClass}">${item.name}</span>
+                                <span class="rank-name">${item.name}</span>
                                 ${!isCashItem ? `<span class="rank-code">${item.code}</span>` : ''}
                             </div>
-                            <div class="rank-score ${scoreClass}">
+                            <div class="rank-score">
                                 ${isCashItem ? '避险' : item.score.toFixed(2)}
                             </div>
                         </div>
@@ -949,7 +1320,27 @@ HTML_TEMPLATE = """
         
         async function loadBacktest(period = 'month') {
             try {
-                const res = await fetch(`/api/backtest?period=${period}&days=365`);
+                // 检查是否是未完成策略
+                const unimplementedStrategies = ['balanced', 'growth'];
+                if (unimplementedStrategies.includes(currentStrategy)) {
+                    document.getElementById('stats-grid').innerHTML = 
+                        `<div class="loading" style="padding: 40px; text-align: center;">
+                            <div style="font-size: 48px; margin-bottom: 20px;">🔧</div>
+                            <div>该策略正在开发中，回测功能敬请期待！</div>
+                        </div>`;
+                    return;
+                }
+                
+                // 根据 period 确定天数
+                const periodDays = {
+                    'week': 7,
+                    'month': 30,
+                    'half': 180,
+                    'year': 365
+                };
+                const days = periodDays[period] || 365;
+                
+                const res = await fetch(`/api/backtest?strategy=${currentStrategy}&period=${period}&days=${days}`);
                 const data = await res.json();
                 
                 if (!data || data.error) {
@@ -978,8 +1369,8 @@ HTML_TEMPLATE = """
                         <span class="stat-label">最大回撤</span>
                     </div>
                     <div class="stat-item highlight">
-                        <span class="stat-value cash">${metrics.cash_ratio}%</span>
-                        <span class="stat-label">空仓时间占比</span>
+                        <span class="stat-value">${metrics.cash_ratio}%</span>
+                        <span class="stat-label">空仓占比</span>
                     </div>
                 `;
                 
@@ -992,9 +1383,20 @@ HTML_TEMPLATE = """
         
         async function loadDecisions() {
             try {
+                // 检查是否是未完成策略
+                const unimplementedStrategies = ['balanced', 'growth'];
+                if (unimplementedStrategies.includes(currentStrategy)) {
+                    const listEl = document.getElementById('decision-list');
+                    listEl.innerHTML = 
+                        `<div class="loading" style="padding: 40px; text-align: center;">
+                            <div style="font-size: 48px; margin-bottom: 20px;">🔧</div>
+                            <div>该策略正在开发中，决策历史敬请期待！</div>
+                        </div>`;
+                    return;
+                }
+                
                 if (!backtestData) {
-                    // 先加载回测数据
-                    const res = await fetch(`/api/backtest?period=year&days=365`);
+                    const res = await fetch(`/api/backtest?strategy=${currentStrategy}&period=year&days=365`);
                     backtestData = await res.json();
                 }
                 
@@ -1008,14 +1410,6 @@ HTML_TEMPLATE = """
                 
                 let html = '';
                 decisions.forEach((d, idx) => {
-                    const actionClass = {
-                        'BUY': 'action-buy',
-                        'SELL': 'action-sell',
-                        'SWITCH': 'action-switch',
-                        'HOLD': 'action-hold',
-                        'CASH': 'action-cash'
-                    }[d.action] || 'action-hold';
-                    
                     const actionText = {
                         'BUY': '买入',
                         'SELL': '卖出',
@@ -1024,36 +1418,20 @@ HTML_TEMPLATE = """
                         'CASH': '空仓'
                     }[d.action] || d.action;
                     
-                    const itemClass = d.decision === 'CASH' ? 'cash' : (d.action === 'SWITCH' ? 'switch' : '');
-                    
-                    // 构建分数详情字符串
-                    let scoresHtml = '';
-                    if (d.scores && Object.keys(d.scores).length > 0) {
-                        const sortedScores = Object.entries(d.scores)
-                            .sort((a, b) => b[1] - a[1])
-                            .slice(0, 3);
-                        scoresHtml = sortedScores.map(([code, score]) => 
-                            `<span class="score-detail">${code}:${score.toFixed(2)}</span>`
-                        ).join('');
-                    }
-                    
                     html += `
-                        <div class="decision-item ${itemClass}">
+                        <div class="decision-item">
                             <div class="decision-header">
                                 <span class="decision-date">${d.date}</span>
-                                <span class="decision-action ${actionClass}">${actionText}</span>
+                                <span class="decision-action">${actionText}</span>
                             </div>
                             <div class="decision-body">
                                 <div class="decision-main">
                                     <div class="decision-from-to">
-                                        ${d.prev_holding === 'CASH' ? '💰 空仓' : d.prev_holding}
+                                        ${d.prev_holding === 'CASH' ? '💰' : d.prev_holding}
                                         <span class="decision-arrow">→</span>
-                                        ${d.decision === 'CASH' ? '💰 空仓' : d.decision}
+                                        ${d.decision === 'CASH' ? '💰' : d.decision}
                                     </div>
                                     <div class="decision-reason">${d.reason}</div>
-                                </div>
-                                <div class="decision-scores">
-                                    ${scoresHtml}
                                 </div>
                             </div>
                         </div>
@@ -1064,8 +1442,6 @@ HTML_TEMPLATE = """
                 
             } catch (e) {
                 console.error('加载决策记录失败:', e);
-                document.getElementById('decision-list').innerHTML = 
-                    '<div class="loading">加载失败</div>';
             }
         }
         
@@ -1076,18 +1452,13 @@ HTML_TEMPLATE = """
                 returnChart.destroy();
             }
             
+            const color = getComputedStyle(document.documentElement).getPropertyValue('--color').trim();
             const labels = chartData.map(d => d.date);
             const values = chartData.map(d => d.value);
-            const cashPoints = chartData.map((d, i) => d.is_cash ? values[i] : null);
             
             const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-            if (isPositive) {
-                gradient.addColorStop(0, 'rgba(245, 108, 108, 0.3)');
-                gradient.addColorStop(1, 'rgba(245, 108, 108, 0)');
-            } else {
-                gradient.addColorStop(0, 'rgba(103, 194, 58, 0.3)');
-                gradient.addColorStop(1, 'rgba(103, 194, 58, 0)');
-            }
+            gradient.addColorStop(0, color + '40');
+            gradient.addColorStop(1, color + '00');
             
             returnChart = new Chart(ctx, {
                 type: 'line',
@@ -1096,21 +1467,13 @@ HTML_TEMPLATE = """
                     datasets: [{
                         label: '策略净值',
                         data: values,
-                        borderColor: isPositive ? '#f56c6c' : '#67c23a',
+                        borderColor: color,
                         backgroundColor: gradient,
                         borderWidth: 2,
                         fill: true,
                         tension: 0.4,
                         pointRadius: 0,
                         pointHoverRadius: 4
-                    }, {
-                        label: '空仓期',
-                        data: cashPoints,
-                        backgroundColor: '#11998e',
-                        borderColor: '#11998e',
-                        pointRadius: 4,
-                        pointStyle: 'circle',
-                        showLine: false
                     }]
                 },
                 options: {
@@ -1127,13 +1490,9 @@ HTML_TEMPLATE = """
                                 label: function(context) {
                                     const idx = context.dataIndex;
                                     const item = chartData[idx];
-                                    if (context.datasetIndex === 1 && item.is_cash) {
-                                        return ['状态: 空仓避险', `净值: ¥${item.value.toFixed(2)}`];
-                                    }
                                     return [
                                         `净值: ¥${context.parsed.y.toFixed(2)}`,
-                                        `收益率: ${item.return_pct >= 0 ? '+' : ''}${item.return_pct}%`,
-                                        `持仓: ${item.holding === 'CASH' ? '空仓' : item.holding}`
+                                        `收益率: ${item.return_pct >= 0 ? '+' : ''}${item.return_pct}%`
                                     ];
                                 }
                             }
@@ -1168,11 +1527,16 @@ HTML_TEMPLATE = """
         }
         
         // 初始化
-        loadRecommendation();
+        window.addEventListener('load', function() {
+            initStrategies();
+            document.documentElement.style.setProperty('--color', strategies.momentum.color);
+        });
     </script>
 </body>
 </html>
 """
+
+# ============ API路由 ============"""
 
 # ============ API路由 ============
 
@@ -1180,30 +1544,47 @@ HTML_TEMPLATE = """
 def home():
     return render_template_string(HTML_TEMPLATE)
 
+def get_strategy(strategy_type='momentum'):
+    """根据策略类型返回对应的策略实例"""
+    return Strategy(strategy_type=strategy_type)
+
 @app.route('/api/recommend', methods=['GET'])
 def recommend():
-    result = strategy.get_recommendation()
+    strategy_id = request.args.get('strategy', 'momentum')
+    # 为每个请求创建对应策略的实例
+    current_strategy = get_strategy(strategy_id)
+    result = current_strategy.get_recommendation()
+    if result:
+        # 添加策略元信息
+        result['strategy'] = strategy_id
+        result['strategy_name'] = STRATEGIES[strategy_id]['name']
     return jsonify(result)
 
 @app.route('/api/backtest', methods=['GET'])
 def backtest():
+    strategy_id = request.args.get('strategy', 'momentum')
     period = request.args.get('period', 'month')
     days = int(request.args.get('days', 365))
+    
+    # 为每个请求创建对应策略的实例
+    current_strategy = get_strategy(strategy_id)
     
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     
-    metrics = strategy.backtest.run_backtest(start_date, end_date)
+    metrics = current_strategy.backtest.run_backtest(start_date, end_date)
     
     if not metrics:
         return jsonify({"error": "回测失败"})
     
-    chart_data = strategy.backtest.get_chart_data(period)
+    chart_data = current_strategy.backtest.get_chart_data(period)
     
     return jsonify({
         "metrics": metrics,
         "chart_data": chart_data,
-        "period": period
+        "period": period,
+        "strategy": strategy_id,
+        "strategy_name": STRATEGIES[strategy_id]['name']
     })
 
 if __name__ == '__main__':
