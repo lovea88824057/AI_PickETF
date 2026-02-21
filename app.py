@@ -774,8 +774,15 @@ class Strategy:
             'market_status': '熊市' if should_cash else '正常'
         }
 
-# 默认创建"追涨杀跌"策略实例
-strategy = Strategy(strategy_type='momentum')
+# 默认创建"追涨杀跌"策略实例（使用延迟加载，只在首次请求时初始化）
+strategy = None
+
+def get_current_strategy(strategy_type='momentum'):
+    """获取策略实例，使用单例模式避免重复初始化"""
+    global strategy
+    if strategy is None or strategy.strategy_type != strategy_type:
+        strategy = Strategy(strategy_type=strategy_type)
+    return strategy
 
 # ============ 网页界面（多策略卡片版） ============
 HTML_TEMPLATE = """
@@ -1672,8 +1679,8 @@ def home():
     return render_template_string(HTML_TEMPLATE)
 
 def get_strategy(strategy_type='momentum'):
-    """根据策略类型返回对应的策略实例"""
-    return Strategy(strategy_type=strategy_type)
+    """根据策略类型返回对应的策略实例（使用缓存）"""
+    return get_current_strategy(strategy_type)
 
 @app.route('/api/recommend', methods=['GET'])
 def recommend():
@@ -1716,6 +1723,15 @@ def backtest():
 
 if __name__ == '__main__':
     import os
+    import sys
+    
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_ENV') == 'development'
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    
+    # 在Render等云平台上，使用gunicorn启动
+    if os.environ.get('RENDER'):
+        # Render环境：使用gunicorn
+        os.system(f'gunicorn --workers 1 --timeout 120 --bind 0.0.0.0:{port} app:app')
+    else:
+        # 本地开发：使用Flask自带服务器
+        app.run(host='0.0.0.0', port=port, debug=debug, threaded=True)
