@@ -16,8 +16,8 @@ STRATEGIES = {
         'name': '追涨杀跌',
         'english': 'Momentum Trading',
         'description': '追踪市场热点，快速响应场景变化',
-        'profession': '代码哥 (CodeGhost)',
-        'detail': '专注于互联网与科技创新，研究代码逻辑与增长引擎，掌握快速迭代节奏与市场反应。',
+        'profession': '隔壁老翁',
+        'detail': '喜欢追涨杀跌，追踪热点赛道，快速切换持仓，高风险高收益，市场情绪主导交易决策。',
         'style': '激进型',
         'color': '#667eea',
         'icon': '⚡'
@@ -33,12 +33,12 @@ STRATEGIES = {
         'icon': '🏛️'
     },
     'balanced': {
-        'name': '稳健均衡',
+        'name': '量化均衡',
         'english': 'Balanced Strategy',
         'description': '风险与收益平衡配置，追求稳定增长',
-        'profession': '资产配置师',
-        'detail': '灵活配置各类资产，控制波动率，追求风险调整后的持续收益。',
-        'style': '稳健型',
+        'profession': 'Quant工程师',
+        'detail': '用代码优化交易逻辑，用数据说话，追求量化回测表现。通过技术指标和统计模型精确控制风险，打造稳定的投资系统。',
+        'style': '量化型',
         'color': '#f59e0b',
         'icon': '⚖️'
     },
@@ -121,17 +121,50 @@ class ETFData:
             return None
     
     def calculate_features(self, df):
-        """计算技术指标"""
+        """计算技术指标（支持多种量化指标）"""
         if len(df) < 30:
             return None
             
         df = df.copy()
+        
+        # ===== 基础收益率指标 =====
         df['return_5'] = df['收盘'].pct_change(5)
         df['return_10'] = df['收盘'].pct_change(10)
         df['return_20'] = df['收盘'].pct_change(20)
+        
+        # ===== 移动平均线系统 =====
+        df['ma5'] = df['收盘'].rolling(5).mean()
         df['ma20'] = df['收盘'].rolling(20).mean()
+        df['ma60'] = df['收盘'].rolling(60).mean()
         df['ma20_bias'] = (df['收盘'] - df['ma20']) / df['ma20']
+        
+        # ===== 波动率指标 =====
+        df['returns'] = df['收盘'].pct_change()
         df['volatility'] = df['收盘'].pct_change().rolling(20).std()
+        
+        # ===== RSI指标（相对强弱指标）=====
+        delta = df['收盘'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['rsi14'] = 100 - (100 / (1 + rs))
+        
+        # ===== MACD指标（动量指标）=====
+        exp1 = df['收盘'].ewm(span=12, adjust=False).mean()
+        exp2 = df['收盘'].ewm(span=26, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd'] - df['macd_signal']
+        
+        # ===== 布林带指标（波动率带状）=====
+        df['bb_std'] = df['收盘'].rolling(20).std()
+        df['bb_middle'] = df['收盘'].rolling(20).mean()
+        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 2)
+        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 2)
+        df['bb_position'] = (df['收盘'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
+        
+        # ===== 趋势确认信号 =====
+        df['trend_signal'] = ((df['ma5'] > df['ma20']) & (df['ma20'] > df['ma60'])).astype(int)
         
         return df
 
@@ -166,18 +199,21 @@ class SmartModel:
             self.market_bear_threshold = -0.06  # 宏观政策风险敏感（-6%触发）
             self.max_volatility = 0.020  # 严控波动率（相对严格）
         
-        # 稳健均衡策略（Balanced）- 预留框架，待实现
+        # 稳健均衡策略（Balanced Quant Strategy）- 量化多指标融合
         elif strategy_type == 'balanced':
+            # 权重配置：多指标加权组合
             self.weights = {
-                'return_5': 0.15,
-                'return_10': 0.20,
-                'return_20': 0.20,
-                'ma20_bias': 0.25,
-                'volatility': -0.10
+                'trend_score': 0.30,      # 趋势确认权重（30%）
+                'rsi_score': 0.20,        # RSI相对强弱权重（20%）
+                'macd_score': 0.25,       # MACD动量权重（25%）
+                'bb_score': 0.15,         # 布林带位置权重（15%）
+                'volatility': -0.10       # 波动率风险惩罚（-10%）
             }
-            self.cash_threshold = 48
-            self.market_bear_threshold = -0.06
-            self.max_volatility = 0.028
+            # 量化参数
+            self.cash_threshold = 42      # 空仓决策线（更宽松，增加机会）
+            self.market_bear_threshold = -0.05  # 宏观风险阈值
+            self.max_volatility = 0.035   # 最大容忍波动率
+            self.dynamic_position_sizing = True  # 启用动态仓位管理
         
         # 成长信仰策略（Growth）- 预留框架，待实现
         elif strategy_type == 'growth':
@@ -201,10 +237,10 @@ class SmartModel:
         score = 50.0
         signals = {}
         
-        # 对于稳健派跌策略：破20日均线卖出硬性规则
+        # ===== 对于稳健派跌策略：破20日均线卖出硬性规则 =====
         if self.strategy_type == 'value' and 'ma20_bias' in latest:
             ma20_bias = latest.get('ma20_bias', 0)
-            signals['ma20_below_line'] = ma20_bias < 0  # 是否跌破20日均线
+            signals['ma20_below_line'] = int(ma20_bias < 0)  # 是否跌破20日均线（0或1）
             
             # 如果跌破20日均线，直接降低评分到警戒线
             if ma20_bias < 0:
@@ -219,8 +255,99 @@ class SmartModel:
                 else:  # 刚刚跌破
                     score = 45.0  # 降到中位
         
-        # 正常的加权评分
-        if score == 50.0:  # 只有在没有触发止损时才进行正常评分
+        # ===== 对于量化均衡策略：多指标融合信号 =====
+        elif self.strategy_type == 'balanced':
+            # 信号1：趋势确认（权重30%）
+            # 判断价格是否在均线上方：ma5 > ma20 > ma60
+            if len(df) >= 60:
+                trend_signal = 50
+                if latest['ma5'] > latest['ma20'] > latest['ma60']:
+                    trend_signal = 85  # 完全看涨
+                elif latest['ma5'] < latest['ma20'] < latest['ma60']:
+                    trend_signal = 15  # 完全看跌
+                elif latest['ma5'] > latest['ma20']:
+                    trend_signal = 70  # 中期看涨
+                elif latest['ma5'] < latest['ma20']:
+                    trend_signal = 30  # 中期看跌
+                signals['trend_score'] = round(trend_signal, 2)
+                score += (trend_signal - 50) * 0.30
+            
+            # 信号2：RSI超卖/超买（权重20%）
+            # RSI < 30 超卖（买入）, RSI > 70 超买（卖出）
+            if 'rsi14' in latest and pd.notna(latest['rsi14']):
+                rsi = latest['rsi14']
+                rsi_signal = 50
+                if rsi < 30:
+                    rsi_signal = 80  # 强烈买入信号
+                elif rsi < 40:
+                    rsi_signal = 65
+                elif rsi > 70:
+                    rsi_signal = 20  # 强烈卖出信号
+                elif rsi > 60:
+                    rsi_signal = 35
+                elif rsi > 50:
+                    rsi_signal = 60
+                else:
+                    rsi_signal = 40
+                signals['rsi_score'] = round(rsi_signal, 2)
+                signals['rsi'] = round(rsi, 2)
+                score += (rsi_signal - 50) * 0.20
+            
+            # 信号3：MACD动量（权重25%）
+            # MACD金叉为买入信号，死叉为卖出信号
+            if 'macd' in latest and 'macd_signal' in latest and len(df) > 1:
+                macd_signal = 50
+                prev_macd = df.iloc[-2]['macd']
+                prev_signal = df.iloc[-2]['macd_signal']
+                
+                # 检测金叉死叉
+                if prev_macd < prev_signal and latest['macd'] > latest['macd_signal']:
+                    macd_signal = 80  # 金叉（强买）
+                elif prev_macd > prev_signal and latest['macd'] < latest['macd_signal']:
+                    macd_signal = 20  # 死叉（强卖）
+                elif latest['macd'] > latest['macd_signal'] and latest['macd'] > 0:
+                    macd_signal = 70  # 上升趋势
+                elif latest['macd'] < latest['macd_signal'] and latest['macd'] < 0:
+                    macd_signal = 30  # 下降趋势
+                
+                signals['macd_score'] = round(macd_signal, 2)
+                signals['macd'] = round(latest['macd'], 6)
+                score += (macd_signal - 50) * 0.25
+            
+            # 信号4：布林带位置（权重15%）
+            # bb_position: 0=下轨(超卖), 0.5=中线, 1=上轨(超买)
+            if 'bb_position' in latest and pd.notna(latest['bb_position']):
+                bb_signal = 50
+                bb_pos = latest['bb_position']
+                if bb_pos < 0.2:
+                    bb_signal = 75  # 接近下轨，买入机会
+                elif bb_pos < 0.4:
+                    bb_signal = 65
+                elif bb_pos > 0.8:
+                    bb_signal = 25  # 接近上轨，卖出风险
+                elif bb_pos > 0.6:
+                    bb_signal = 35
+                else:
+                    bb_signal = 50  # 中线附近，中性
+                signals['bb_score'] = round(bb_signal, 2)
+                signals['bb_position'] = round(bb_pos, 2)
+                score += (bb_signal - 50) * 0.15
+            
+            # 波动率惩罚（权重-10%）
+            if 'volatility' in latest and pd.notna(latest['volatility']):
+                volatility = latest['volatility']
+                vol_penalty = 0
+                if volatility > self.max_volatility * 1.5:
+                    vol_penalty = -20  # 高波动率严厉惩罚
+                elif volatility > self.max_volatility:
+                    vol_penalty = -10  # 中等惩罚
+                else:
+                    vol_penalty = 0  # 无惩罚
+                signals['volatility'] = round(volatility * 100, 2)
+                score += vol_penalty
+        
+        # ===== 正常的加权评分（用于momentum、value等策略）=====
+        elif score == 50.0:  # 只有在没有触发止损时才进行正常评分
             for feature, weight in self.weights.items():
                 if feature in latest and pd.notna(latest[feature]):
                     if feature == 'volatility':
@@ -234,11 +361,12 @@ class SmartModel:
         # 确保2位小数
         score = round(min(max(score, 0), 100), 2)
         
-        market_bear = False
+        # 市场熊市检测
+        market_bear = 0
         if market_df is not None and len(market_df) > 5:
             market_return_5 = market_df['收盘'].pct_change(5).iloc[-1]
             if market_return_5 < self.market_bear_threshold:
-                market_bear = True
+                market_bear = 1
             signals['market_return_5'] = round(market_return_5 * 100, 2)
         
         signals['market_bear'] = market_bear
@@ -552,7 +680,6 @@ class Strategy:
         """获取今日推荐"""
         # 检查策略是否已完整实现
         unimplemented_strategies = {
-            'balanced': '🔧 稳健均衡策略 - 开发中',
             'growth': '🚀 信仰成长策略 - 开发中'
         }
         
@@ -1115,8 +1242,8 @@ HTML_TEMPLATE = """
                 'name': '追涨杀跌',
                 'english': 'Momentum Trading',
                 'description': '追踪市场热点，快速响应场景变化',
-                'profession': '代码哥 (CodeGhost)',
-                'detail': '专注于互联网与科技创新，研究代码逻辑与增长引擎，掌握快速迭代节奏与市场反应。',
+                'profession': '隔壁老翁',
+                'detail': '喜欢追涨杀跌，追踪热点赛道，快速切换持仓，高风险高收益，市场情绪主导交易决策。',
                 'style': '激进型',
                 'color': '#667eea',
                 'icon': '⚡'
@@ -1132,12 +1259,12 @@ HTML_TEMPLATE = """
                 'icon': '🏛️'
             },
             'balanced': {
-                'name': '稳健均衡',
+                'name': '量化均衡',
                 'english': 'Balanced Strategy',
                 'description': '风险与收益平衡配置，追求稳定增长',
-                'profession': '资产配置师',
-                'detail': '灵活配置各类资产，控制波动率，追求风险调整后的持续收益。',
-                'style': '稳健型',
+                'profession': 'Quant工程师',
+                'detail': '用代码优化交易逻辑，用数据说话，追求量化回测表现。通过技术指标和统计模型精确控制风险，打造稳定的投资系统。',
+                'style': '量化型',
                 'color': '#f59e0b',
                 'icon': '⚖️'
             },
@@ -1321,7 +1448,7 @@ HTML_TEMPLATE = """
         async function loadBacktest(period = 'month') {
             try {
                 // 检查是否是未完成策略
-                const unimplementedStrategies = ['balanced', 'growth'];
+                const unimplementedStrategies = ['growth'];
                 if (unimplementedStrategies.includes(currentStrategy)) {
                     document.getElementById('stats-grid').innerHTML = 
                         `<div class="loading" style="padding: 40px; text-align: center;">
@@ -1384,7 +1511,7 @@ HTML_TEMPLATE = """
         async function loadDecisions() {
             try {
                 // 检查是否是未完成策略
-                const unimplementedStrategies = ['balanced', 'growth'];
+                const unimplementedStrategies = ['growth'];
                 if (unimplementedStrategies.includes(currentStrategy)) {
                     const listEl = document.getElementById('decision-list');
                     listEl.innerHTML = 
